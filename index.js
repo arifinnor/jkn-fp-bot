@@ -83,11 +83,13 @@ async function run_bot({ username, password, card_number, exit, wait }) {
 	const already_open = await bot.winExists(fp_win_title);
 	if (!already_open) {
 		await bot.run(fp_ins_path);
-		await bot.winWait(fp_win_title); // wait for the application window to appear
+		const appeared = await bot.winWait(fp_win_title, '', 30); // 30s timeout
+		if (!appeared) throw new Error('Timeout waiting for application to open');
 	}
 
-	await bot.winActivate(fp_win_title); // activate the application window
-	await bot.winWaitActive(fp_win_title); // wait for the application to be in focus
+	await bot.winActivate(fp_win_title);
+	const activated = await bot.winWaitActive(fp_win_title, '', 10); // 10s timeout
+	if (!activated) throw new Error('Timeout waiting for application to be active');
 
 	if (exit) {
 		await bot.winSetOnTop(fp_win_title, '', 1); // set window on top
@@ -138,59 +140,34 @@ async function run_bot({ username, password, card_number, exit, wait }) {
 	await bot.send(card_number);
 
 	if (exit) {
-		// wait for fingerprint scan result
-		// strategy: detect purple success button via pixel color, or failure dialog
-		const failure_dialog = 'Sidik jari tidak di kenal';
-		const max_wait_ms = 30000; // 30 seconds max wait for scan
+		// poll for window closure or loss of focus
+		const max_wait_ms = 60000; // 60 seconds max
 		const poll_interval_ms = 300;
 		let elapsed = 0;
-		let scan_result = { success: false, message: 'timeout' };
-
-		// success button position (relative to window) and color
-		// adjust these values if detection doesn't work
-		const success_btn_offset_x = 270; // horizontal offset from window left
-		const success_btn_offset_y = 345; // vertical offset from window top
-		const success_btn_color = 0x8B5CF6; // purple color (BGR format may differ)
 
 		while (elapsed < max_wait_ms) {
-			// check if failure dialog appeared
-			const dialog_exists = await bot.winExists(failure_dialog);
-			if (dialog_exists) {
-				// dismiss the failure dialog
-				await bot.winActivate(failure_dialog);
-				await bot.send('{ENTER}');
-				await setTimeout(300);
-				scan_result = { success: false, message: 'Sidik jari tidak di kenal' };
-				break;
+			const still_open = await bot.winExists(fp_win_title);
+			if (!still_open) {
+				return { success: true, message: 'card_number sent, window closed' };
 			}
 
-			// check if success button appeared via pixel color
-			const pixel_x = left + success_btn_offset_x;
-			const pixel_y = top + success_btn_offset_y;
-			const pixel_color = await bot.pixelGetColor(pixel_x, pixel_y);
-
-			// check if pixel is purple-ish (success button visible)
-			// extract RGB components and check for purple hue
-			const r = (pixel_color >> 16) & 0xff;
-			const g = (pixel_color >> 8) & 0xff;
-			const b = pixel_color & 0xff;
-
-			// purple has high red, low green, high blue
-			if (r > 100 && g < 100 && b > 150) {
-				await setTimeout(300);
-				scan_result = { success: true, message: 'Sidik Jari Peserta Sudah Terdaftar' };
-				break;
+			// check if window lost focus (clicked outside)
+			const is_active = await bot.winActive(fp_win_title, '');
+			if (!is_active) {
+				// minimize the window
+				await bot.winSetOnTop(fp_win_title, '', 0);
+				await bot.winSetState(fp_win_title, '', 6); // SW_MINIMIZE = 6
+				return { success: true, message: 'card_number sent, window minimized' };
 			}
 
 			await setTimeout(poll_interval_ms);
 			elapsed += poll_interval_ms;
 		}
 
-		// remove on-top status and send window to background
+		// timeout reached, minimize anyway
 		await bot.winSetOnTop(fp_win_title, '', 0);
 		await bot.winSetState(fp_win_title, '', 6); // SW_MINIMIZE = 6
-
-		return scan_result;
+		return { success: true, message: 'card_number sent, timeout reached' };
 	}
 
 	return { success: true, message: 'card_number sent' };
